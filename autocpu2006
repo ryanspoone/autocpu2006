@@ -1,0 +1,697 @@
+#!/bin/bash
+
+##############################################################################
+#  autocpu2006 - This utility performs SPEC CPU2006 benchmarking using
+#  GCC. Capabilities include in installing prerequisites, building
+#  and installing SPEC CPU2006, and running reportable integer and
+#  floating-point runs.
+#
+#  Required file tree:
+#
+#  |-- lib
+#  |   |-- setup.sh
+#  |   |-- system_info.sh
+#  |    `- user_input.sh
+#  |
+#  |-- config
+#  |   |-- linux32-arm32-gcc.cfg
+#  |   |-- linux32-intel32-gcc.cfg
+#  |   |-- linux64-arm64-gcc.cfg
+#  |   |-- linux64-intel64-gcc.cfg
+#  |   |-- linux64-powerpc-gcc.cfg
+#  |    `- flags/
+#  |       |-- linux-arm32-gcc.xml
+#  |       |-- linux-arm64-gcc.xml
+#  |       |-- linux-intel32-gcc.xml
+#  |       |-- linux-intel64-gcc.xml
+#  |        `- linux-powerpc-gcc.xml
+#  |
+#   `- autocpu2006
+#
+#
+#  Usage: autocpu2006 [OPTIONS]...
+#
+#  Option          GNU long option         Meaning
+#   -h             --help                  Show this message.
+#   -s             --speed                 Run runspec speed. Default is rate.
+#   -g             --ignore                Ignore runspec build errors.
+#   -r             --rebuild               Force SPEC CPU2006 rebuild and
+#                                          installation.
+#   -b             --build-only            Only build CPU2006.
+#   -o             --one-copy              Do a single copy run.
+#   -i             --integer               Run integer micro-benchmarks.
+#   -f             --floating-point        Run floating-point micro-benchmarks.
+#   -m [name]      --machine [name]        Manually set the machine setting.
+#   -c [n]         --copies [n]            Override the number of copies to use.
+#   -t [range]     --taskset [range]       Set the core IDs to test.
+#                                          (e.g., 0,2,5,6-10)
+#   -T [n]         --iterations [n]        Override the number of iterations to
+#                                          use.
+#   -a             --no-affinity           Disable taskset and numactl for
+#                                          runspec runs.
+#   -p             --prerequisites         Install prerequisites.
+#   -n             --info-only             Display system and config info only.
+#
+##############################################################################
+#
+#  Last Updated:
+#     12/14/2016
+#
+#  Authors/Contributors:
+#     Ryan Spoone (ryanspoone@gmail.com)
+#
+##############################################################################
+
+############################################################
+# Make sure we are working in the this script's source
+# directory
+############################################################
+AUTO_CPU_DIR=$(cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd)
+cd "$AUTO_CPU_DIR" || exit
+export AUTO_CPU_DIR
+
+############################################################
+# Import sources
+############################################################
+# shellcheck disable=SC1091,SC1090
+source "$AUTO_CPU_DIR/lib/user_input.sh"
+# shellcheck disable=SC1091,SC1090
+source "$AUTO_CPU_DIR/lib/setup.sh"
+# shellcheck disable=SC1091,SC1090
+source "$AUTO_CPU_DIR/lib/system_info.sh"
+
+############################################################
+# Argument switch variables
+############################################################
+REBUILD=false
+PREREQUISITES=false
+COPY_OVERRIDE=false
+MODE='rate'
+INT=false
+FP=false
+NO_COPY=false
+IGNORE=false
+INFO_ONLY=false
+TASKSET_ENABLED=false
+TASKSET_RANGE=''
+ITERATIONS_OVERRIDE=false
+BUILD_ONLY=false
+AFFINITY=true
+MACHINE_OVERRIDE=false
+CPU_TYPE=""
+PROGRAM_START=$(date +"%s")
+
+############################################################
+# Argument parsing
+############################################################
+if [[ "$#" -gt 0 ]]; then
+  while [ "$1" ]; do
+    ARG="$1"
+    if [[ "$ARG" == "-o" || "$ARG" == "--one-copy" ]]; then
+      COPY_OVERRIDE=true
+      NO_COPY=true
+      shift
+    elif [[ "$ARG" == "-s" || "$ARG" == "--speed" ]]; then
+      MODE='speed'
+      shift
+    elif [[ "$ARG" == "-c" || "$ARG" == "--copies" ]]; then
+      COPY_OVERRIDE=true
+      COPIES=$2
+      shift
+      shift
+    elif [[ "$ARG" == "-r" || "$ARG" == "--rebuild" ]]; then
+      REBUILD=true
+      shift
+    elif [[ "$ARG" == "-b" || "$ARG" == "--build-only" ]]; then
+      BUILD_ONLY=true
+      shift
+    elif [[ "$ARG" == "-p" || "$ARG" == "--prerequisites" ]]; then
+      PREREQUISITES=true
+      shift
+    elif [[ "$ARG" == "-i" || "$ARG" == "--integer" ]]; then
+      INT=true
+      shift
+    elif [[ "$ARG" == "-f" || "$ARG" == "--floating-point" ]]; then
+      FP=true
+      shift
+    elif [[ "$ARG" == "-m" || "$ARG" == "--machine" ]]; then
+      MACHINE="$2"
+      MACHINE_OVERRIDE=true
+      shift
+      shift
+    elif [[ "$ARG" == "-T" || "$ARG" == "--iterations" ]]; then
+      ITERATIONS_OVERRIDE=true
+      ITERATIONS="$2"
+      IGNORE=true
+      shift
+      shift
+    elif [[ "$ARG" == "-g" || "$ARG" == "--ignore" ]]; then
+      IGNORE=true
+      shift
+    elif [[ "$ARG" == "-n" || "$ARG" == "--info-only" ]]; then
+      INFO_ONLY=true
+      shift
+    elif [[ "$ARG" == "-t" || "$ARG" == "--taskset" ]]; then
+      TASKSET_ENABLED=true
+      TASKSET_RANGE="$2"
+      shift
+      shift
+    elif [[ "$ARG" == "-a" || "$ARG" == "--no-affinity" ]]; then
+      AFFINITY=false
+      shift
+    elif [[ "$ARG" == "-h" || "$ARG" == "--help" ]]; then
+      echo "Usage: autocpu2006 [OPTIONS]..."
+      echo
+      echo "Option          GNU long option         Meaning"
+      echo
+      echo " -h             --help                  Show this message."
+      echo
+      echo " -s             --speed                 Run runspec speed. Default is"
+      echo "                                        rate."
+      echo
+      echo " -g             --ignore                Ignore runspec build errors."
+      echo
+      echo " -r             --rebuild               Force SPEC CPU2006 rebuild and"
+      echo "                                        installation."
+      echo
+      echo " -b             --build-only            Only build CPU2006."
+      echo
+      echo " -o             --one-copy              Do a single copy run."
+      echo
+      echo " -i             --integer               Run integer."
+      echo
+      echo " -f             --floating-point        Run floating-point."
+      echo
+      echo " -m [name]      --machine [name]        Manually set the machine setting."
+      echo
+      echo " -c [n]         --copies [n]            Override the number of copies to"
+      echo "                                        use."
+      echo
+      echo " -T [n]         --iterations [n]        Override the number of iterations"
+      echo "                                        to use."
+      echo
+      echo " -t [range]     --taskset [range]       Set the core IDs to test."
+      echo "                                        (e.g., 0,2,5,6-10)"
+      echo
+      echo " -a             --no-affinity           Disable taskset and numactl for"
+      echo "                                        runspec runs."
+      echo
+      echo " -p             --prerequisites         Install prerequisites."
+      echo
+      echo " -n             --info-only             Display system and configuration"
+      echo "                                        information only."
+      echo
+      exit 0
+    else
+      echo "autocpu2006: invalid operand ‘$ARG’"
+      echo "Try 'autocpu2006 --help' for more information."
+      echo
+      echo "Usage: autocpu2006 [OPTIONS]..."
+      echo
+      echo "Option          GNU long option         Meaning"
+      echo
+      echo " -h             --help                  Show this message."
+      echo
+      echo " -s             --speed                 Run runspec speed. Default is"
+      echo "                                        rate."
+      echo
+      echo " -g             --ignore                Ignore runspec build errors."
+      echo
+      echo " -r             --rebuild               Force SPEC CPU2006 rebuild and"
+      echo "                                        installation."
+      echo
+      echo " -b             --build-only            Only build CPU2006."
+      echo
+      echo " -o             --one-copy              Do a single copy run."
+      echo
+      echo " -i             --integer               Run integer."
+      echo
+      echo " -f             --floating-point        Run floating-point."
+      echo
+      echo " -m [name]      --machine [name]        Manually set the machine setting."
+      echo
+      echo " -c [n]         --copies [n]            Override the number of copies to"
+      echo "                                        use."
+      echo
+      echo " -T [n]         --iterations [n]        Override the number of iterations"
+      echo "                                        to use."
+      echo
+      echo " -t [range]     --taskset [range]       Set the core IDs to test."
+      echo "                                        (e.g., 0,2,5,6-10)"
+      echo
+      echo " -a             --no-affinity           Disable taskset and numactl for"
+      echo "                                        runspec runs."
+      echo
+      echo " -p             --prerequisites         Install prerequisites."
+      echo
+      echo " -n             --info-only             Display system and configuration"
+      echo "                                        information only."
+      echo
+      exit 1
+    fi
+  done
+fi
+
+
+############################################################
+# Double check if user really meant no integer and
+# floating-point runs
+############################################################
+if [[ $INT == false  && $FP == false && $INFO_ONLY == false && $BUILD_ONLY == false ]]; then
+  echo -n "You picked neither integer or floating-point runs. Is this correct (y/n)? "
+  read -r NORUN
+
+  if [[ "$NORUN" == *"n"* ]]; then
+    echo -n "Would you like an integer run (y/n)?"
+    read -r INT_ANS
+
+    if [[ "$INT_ANS" == *"y"* ]]; then
+      INT=true
+    fi
+
+    echo -n "Would you like an floating-point run (y/n)?"
+    read -r FP_ANS
+
+    if [[ "$FP_ANS" == *"y"* ]]; then
+      FP=true
+    fi
+  fi
+fi
+
+# Set environment stack size to unlimited
+ulimit -s unlimited
+
+# Clear file system page cache
+if [ -f /proc/sys/vm/drop_caches ]; then
+  echo '1' > /proc/sys/vm/drop_caches
+fi
+
+############################################################
+# Exports
+############################################################
+export COPY_OVERRIDE
+export ITERATIONS_OVERRIDE
+
+############################################################
+# Install Prerequisites
+############################################################
+if [[ $PREREQUISITES == true ]]; then
+  echo
+  echo '*************************************************************************'
+  echo
+  echo 'Checking if prerequisites need to be installed and installing if necessary...'
+  echo
+  prerequisites
+  echo
+  echo '*************************************************************************'
+  echo
+fi
+
+############################################################
+# Get and set all required system information
+############################################################
+getSystemInfo
+
+############################################################
+# Get and set appropriate run commands
+############################################################
+
+############################################################
+# Select the proper config file
+############################################################
+if [[ "$CPU" == *'Intel'* || "$CPU" == *'intel'* || "$CPU" == *'INTEL'* ]]; then
+  CPU_TYPE="Intel"
+
+  if [[ "$ARCH" == '32' ]]; then
+    CONFIG='linux32-intel32-gcc'
+  else
+    CONFIG='linux64-intel64-gcc'
+  fi
+elif [[ "$CPU" == *'Arm'* || "$CPU" == *'arm'* || "$CPU" == *'ARM'* ]]; then
+  CPU_TYPE="ARM"
+
+  if [[ "$ARCH" == *'32'* ]]; then
+    CONFIG='linux32-arm32-gcc'
+  else
+    CONFIG='linux64-arm64-gcc'
+  fi
+elif [[ "$CPU" == *'AMD'* || "$CPU" == *'amd'* ]]; then
+  CPU_TYPE="AMD"
+  CONFIG='linux64-amd64-gcc'
+elif [[ "$CPU" == *'Power'* || "$CPU" == *'POWER'* || "$CPU" == *'power'* || "$CPU" == *'ppc'* ]]; then
+  CPU_TYPE="IBM"
+  CONFIG='linux64-powerpc-gcc'
+else
+  echo
+  echo 'Unable to determine which config file to use.'
+  echo
+  processorArchitecture
+fi
+
+export CPU_TYPE
+export CONFIG
+
+############################################################
+# Select the proper machine flag for the config file
+#
+# This limits the system to only machines defined in the
+# configuration file
+############################################################
+if [[ $MACHINE_OVERRIDE == false ]]; then
+  if [[ $(containsElement "${KNOWN_MTUNE_MARCH[@]}" "$MTUNE") == 'y' ]]; then
+    if [[ ( $CPU != *'Intel'* || $CPU != *'AMD'* ) && "$MTUNE" != "generic" ]]; then
+      MACHINE=$MTUNE
+    else
+      if [[ $(containsElement "${KNOWN_MTUNE_MARCH[@]}" "$MARCH") == 'y' ]]; then
+        MACHINE=$MARCH
+      else
+        echo
+        echo 'We cannot determine your machine architecture.'
+        echo
+        getMachine
+      fi
+    fi
+  else
+    if [[ $(containsElement "${KNOWN_MTUNE_MARCH[@]}" "$MARCH") == 'y' ]]; then
+      MACHINE=$MARCH
+    else
+      echo
+      echo 'We cannot determine your machine architecture.'
+      echo
+      getMachine
+    fi
+  fi
+else
+  # if machine override name is found in config
+  if grep -q "$MACHINE" "$AUTO_CPU_DIR"/config/"$CONFIG".cfg; then
+    echo
+    echo 'Config is already setup for this machine override.'
+    echo
+  else
+    # write new machine parameters in config
+    {
+      echo ""
+      echo '################################################################'
+      echo '#' >> "$AUTO_CPU_DIR"/config/"$CONFIG".cfg
+      echo '################################################################'
+      echo "default=default=default=$MACHINE:"
+      echo "COPTIMIZE = -march=$MACHINE"
+      # shellcheck disable=SC2016
+      echo 'CXXOPTIMIZE = $(COPTIMIZE)'
+      # shellcheck disable=SC2016
+      echo 'FOPTIMIZE = $(COPTIMIZE)'
+      # shellcheck disable=SC2016
+      echo 'F77OPTIMIZE = $(COPTIMIZE)'
+    } >> "$AUTO_CPU_DIR"/config/"$CONFIG".cfg
+
+    # copy over the config files if the build is already setup
+    if [ -f "$AUTO_CPU_DIR/src/config/$CONFIG.cfg" ]; then
+      cp -R "$AUTO_CPU_DIR"/config "$AUTO_CPU_DIR"/src/
+    fi
+  fi
+fi
+
+export MACHINE
+
+############################################################
+# Building the CPU2006 run commands
+############################################################
+
+INT_COMMAND="runspec --config $CONFIG --machine $MACHINE --$MODE --copies $COPIES"
+FP_COMMAND="runspec --config $CONFIG --machine $MACHINE --$MODE --copies $COPIES"
+
+if [[ $IGNORE == true ]] || [[ $COPIES_OVERRIDE == true ]]; then
+  # run non-reportable
+
+  if [[ $ITERATIONS_OVERRIDE == true ]]; then
+    # override iterations from 3 to #
+    INT_COMMAND="$INT_COMMAND --iterations $ITERATIONS --ignore_errors --noreportable"
+    FP_COMMAND="$FP_COMMAND --iterations $ITERATIONS --ignore_errors --noreportable"
+  else
+    # use the default 3 iterations
+    INT_COMMAND="$INT_COMMAND --ignore_errors --noreportable "
+    FP_COMMAND="$FP_COMMAND --ignore_errors --noreportable"
+  fi
+
+else
+  # run reportable
+  INT_COMMAND="$INT_COMMAND --reportable"
+  FP_COMMAND="$FP_COMMAND --reportable"
+fi
+
+if [[ $TASKSET_ENABLED == true ]]; then
+  int_args=( -c "'$TASKSET_RANGE'" "$INT_COMMAND" )
+  fp_args=( -c "'$TASKSET_RANGE'" "$FP_COMMAND" )
+  INT_COMMAND="taskset ${int_args[*]}"
+  FP_COMMAND="taskset ${fp_args[*]}"
+fi
+
+if [[ $AFFINITY == false ]]; then
+  INT_COMMAND="$INT_COMMAND --define no-taskset"
+  FP_COMMAND="$FP_COMMAND --define no-taskset"
+else
+  if hash numactl &>/dev/null; then
+    INT_COMMAND="$INT_COMMAND"
+    FP_COMMAND="$FP_COMMAND"
+  elif hash taskset &>/dev/null; then
+    INT_COMMAND="$INT_COMMAND --define no-numa"
+    FP_COMMAND="$FP_COMMAND --define no-numa"
+  else
+    INT_COMMAND="$INT_COMMAND --define no-taskset"
+    FP_COMMAND="$FP_COMMAND --define no-taskset"
+  fi
+fi
+
+INT_COMMAND="$INT_COMMAND int"
+FP_COMMAND="$FP_COMMAND fp"
+
+export INT_COMMAND
+export FP_COMMAND
+
+
+############################################################
+# Display system information and warnings
+############################################################
+echo
+echo '*************************** System Information **************************'
+echo
+echo "CPU:                $CPU"
+echo "Architecture:       $ARCH bit"
+echo "OS:                 $OS $VER"
+echo "Logical cores:      $LOGICAL_CORES"
+echo "Total RAM:          $RAM_GB GB"
+echo "Compiler:           GNU Compiler Collection (GCC) $GCC_VER"
+echo
+echo '*************************** Runspec Information *************************'
+echo
+echo "Copies:             $COPIES"
+echo "Mode:               $MODE"
+echo "Config file:    $CONFIG"
+if [[ $INT == true ]]; then
+  echo "GCC INT command:    $INT_COMMAND"
+fi
+if [[ $FP == true ]]; then
+  echo "GCC FP command:     $FP_COMMAND"
+fi
+echo
+echo '******************************* Warnings ********************************'
+if [[ $RAM_GB -ge $REQUIRED_RAM ]]; then
+  echo
+  echo '                                  None'
+  echo
+else
+  echo
+  echo "The number of copies has been changed from $LOGICAL_CORES to $COPIES."
+  echo
+
+  if [[ $NO_COPY == false ]] && [[ $COPY_OVERRIDE == false ]]; then
+    echo "This because there isn't enough memory to support the number of CPUs on"
+    echo 'this machine. Please add more memory to this machine to run the optimal'
+    echo 'amount of copies.'
+    echo
+  fi
+fi
+echo '*************************************************************************'
+echo
+if [[ $INFO_ONLY == true ]]; then
+  exit 0
+fi
+echo 'Please exit now if this information is not correct. [Ctrl+C]'
+echo
+echo 'Otherwise, press [Enter] to continue.'
+echo
+echo '*************************************************************************'
+echo
+read -r
+
+# Run Setup
+echo
+echo '*************************************************************************'
+
+if [[ $REBUILD == false ]]; then
+  echo
+  echo 'Checking if CPU2006 needs to be installed and installing if necessary...'
+  setup
+  echo
+else
+  echo
+  echo 'Rebuilding CPU2006...'
+  rebuildSPECCPU
+  echo
+fi
+echo '*************************************************************************'
+echo
+
+if [[ $BUILD_ONLY == true ]]; then
+  echo
+  echo 'Building complete. Exiting now.'
+  echo
+  if [[ $ICC != true ]]; then
+    exit 0
+  fi
+fi
+
+# Run INT
+if [[ $INT == true ]]; then
+  echo
+  echo '*************************************************************************'
+  echo
+  echo 'Running all the int benchmarks...'
+  eval "$INT_COMMAND"
+  echo
+  INT_STOP=$(date +"%s")
+  echo '*************************************************************************'
+  echo
+fi
+sleep 10
+
+# Run FP
+if [[ $FP == true ]]; then
+  echo
+  echo '*************************************************************************'
+  echo
+  echo 'Running all the fp benchmarks...'
+  eval "$FP_COMMAND"
+  echo
+  FP_STOP=$(date +"%s")
+  echo '*************************************************************************'
+  echo
+fi
+sleep 5
+
+
+PROGRAM_STOP=$(date +"%s")
+DIFF=$((PROGRAM_STOP-PROGRAM_START))
+READABLE_DIFF=$(echo -n "$DIFF" | awk '{printf "%02d:%02d\n",int($1/60), int($1%60)}')
+echo
+echo "The total elapsed time: $READABLE_DIFF"
+echo
+
+sleep 5
+
+############################################################
+# Display results directory and files within, in addition to
+# the commands used.
+############################################################
+RESULTS_DIR="$AUTO_CPU_DIR/src/result"
+
+
+if [[ $INT == true || $FP == true ]]; then
+  cd "$RESULTS_DIR" || (echo "Cannot find the results directory. Exiting." && exit)
+  echo '*************************************************************************'
+  echo
+  echo 'Results directory:'
+  echo
+  echo "$RESULTS_DIR"
+  echo
+  echo '*************************************************************************'
+  echo
+  echo 'All files in directory:'
+  echo
+  ls "$RESULTS_DIR"
+  echo
+  echo
+  echo '*************************************************************************'
+
+  ############################################################
+  # Display results if applicable
+  ############################################################
+  echo
+  echo '******************************** Results ********************************'
+  echo
+
+
+  if [[ $INT == true ]]; then
+    cd "$RESULTS_DIR" || exit
+
+    LATEST_INT_FILE=$(find . -name '*CINT2006*.ref.txt' -printf "%T+\t%p\n" | sort -r | head -1 | awk '{ print $NF }')
+
+    if [[ "$LATEST_INT_FILE" != '' ]]; then
+
+      LATEST_INT_FILE_MODIFIED=$(date +"%s" -r "$LATEST_INT_FILE")
+      LATEST_INT_FILE_MODIFIED_DIFF=$((LATEST_INT_FILE_MODIFIED-PROGRAM_START))
+      INT_PROGRAM_RUN_TIME=$((INT_STOP-PROGRAM_START))
+
+      if [[ "$LATEST_INT_FILE_MODIFIED_DIFF" -le "$INT_PROGRAM_RUN_TIME" ]]; then
+        if [[ "$MODE" == 'speed' ]]; then
+          INT_BASE_RESULT=$(grep "SPECint(R)_base2006" "$LATEST_FP_FILE" | sed 's/Est.\s*SPECint\(R\)_base2006\s*//' | tr -d "\t\n\r[:space:]")
+          INT_PEAK_RESULT=$(grep "SPECint2006" "$LATEST_FP_FILE" | sed 's/Est.\s*SPECint2006\s*//' | tr -d "\t\n\r[:space:]")
+        else
+          INT_BASE_RESULT=$(grep "SPECint(R)_rate_base2006" "$LATEST_FP_FILE" | sed 's/Est.\s*SPECint\(R\)_rate_base2006\s*//' | tr -d "\t\n\r[:space:]")
+          INT_PEAK_RESULT=$(grep "SPECint_rate2006" "$LATEST_FP_FILE" | sed 's/Est.\s*SPECint_rate2006\s*//' | tr -d "\t\n\r[:space:]")
+        fi
+
+        echo "Integer run succeeded. Your results file is ${LATEST_INT_FILE}."
+        echo
+        echo "Base: ${INT_BASE_RESULT}"
+        echo "Peak: ${INT_PEAK_RESULT}"
+      else
+        echo "Integer run failed. Check the logs in ${RESULTS_DIR}."
+      fi
+
+    else
+      echo "Integer run failed. Check the logs in ${RESULTS_DIR}."
+    fi
+  fi
+
+  echo
+
+  if [[ $FP == true ]]; then
+    cd "$RESULTS_DIR" || exit
+
+    LATEST_FP_FILE=$(find . -name '*CFP2006*.ref.txt' -printf "%T+\t%p\n" | sort -r | head -1 | awk '{ print $NF }')
+
+    if [[ "$LATEST_FP_FILE" != '' ]]; then
+      LATEST_FP_FILE_MODIFIED=$(date +"%s" -r "$LATEST_FP_FILE")
+      LATEST_FP_FILE_MODIFIED_DIFF=$((LATEST_FP_FILE_MODIFIED-PROGRAM_START))
+      FP_PROGRAM_RUN_TIME=$((FP_STOP-PROGRAM_START))
+
+      if [[ "$LATEST_FP_FILE_MODIFIED_DIFF" -le "$FP_PROGRAM_RUN_TIME" ]]; then
+        if [[ "$MODE" == 'speed' ]]; then
+          FP_BASE_RESULT=$(grep "SPECfp(R)_base2006" "$LATEST_FP_FILE" | sed 's/Est.\s*SPECfp\(R\)_base2006\s*//' | tr -d "\t\n\r[:space:]")
+          FP_PEAK_RESULT=$(grep "SPECfp2006" "$LATEST_FP_FILE" | sed 's/Est.\s*SPECfp2006\s*//' | tr -d "\t\n\r[:space:]")
+        else
+          FP_BASE_RESULT=$(grep "SPECfp(R)_rate_base2006" "$LATEST_FP_FILE" | sed 's/Est.\s*SPECfp\(R\)_rate_base2006\s*//' | tr -d "\t\n\r[:space:]")
+          FP_PEAK_RESULT=$(grep "SPECfp_rate2006" "$LATEST_FP_FILE" | sed 's/Est.\s*SPECfp_rate2006\s*//' | tr -d "\t\n\r[:space:]")
+        fi
+
+        echo "Floating-point run succeeded. Your results file is ${LATEST_FP_FILE}."
+        echo
+        echo "Base: $FP_BASE_RESULT"
+        echo "Peak: $FP_PEAK_RESULT"
+      else
+        echo "Floating-point run failed. Check the logs in ${RESULTS_DIR}."
+      fi
+
+    else
+      echo "Floating-point run failed. Check the logs in ${RESULTS_DIR}."
+    fi
+  fi
+fi
+
+echo
+echo '*************************************************************************'
+echo
+
+
+exit 0
