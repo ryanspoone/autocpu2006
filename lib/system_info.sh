@@ -183,7 +183,7 @@ function getMachineRAM {
   # Get RAM in KB
   RAM_KB=$(grep -m 1 "MemTotal: " /proc/meminfo | sed "s/MemTotal:\s*//g;s/kB//g" | tr -d "\t\n\r[:space:]")
 
-  if [ ! -z "$RAM_KB" ]; then
+  if [ -n "$RAM_KB" ]; then
     # convert using 1000 instead of 1024 because it's in kilo bits
     RAM_GB=$((RAM_KB / 1000 / 1000))
     RAM_B=$((RAM_KB * 1000))
@@ -195,23 +195,23 @@ function getMachineRAM {
         if [[ "$i" == *'GiB'* ]]; then
           # shellcheck disable=SC2001
           convert=$(echo "$i" | sed 's/GiB//g')
-          let RAM_GB+=convert
+          (( RAM_GB+=convert ))
         elif [[ "$i" == *'MiB'* ]]; then
           # shellcheck disable=SC2001
           convert=$(echo "$i" | sed 's/MiB//g')
           convert=$((convert * 1024))
-          let RAM_GB+=convert
+          (( RAM_GB+=convert ))
         elif [[ "$i" == *'KiB'* ]]; then
           # shellcheck disable=SC2001
           convert=$(echo "$i" | sed 's/KiB//g')
           convert=$((convert * 1024 * 1024))
-          let RAM_GB+=convert
+          (( RAM_GB+=convert ))
         fi
       done
 
       if [[ "$RAM_GB" =~ [a-zA-Z]+ ]]; then
         unset RAM_GB
-      elif [ ! -z "$RAM_GB" ]; then
+      elif [ -n "$RAM_GB" ]; then
         # convert using 1024 instead of 1000 because it's in GigaByte
         RAM_KB=$((RAM_GB * 1024 * 1024))
         RAM_B=$((RAM_GB * 1024 * 1024 * 1024))
